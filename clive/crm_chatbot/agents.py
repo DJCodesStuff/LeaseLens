@@ -138,7 +138,7 @@ def run_listing_agent(message: str, model, modelName: str, listings_col, rag_con
 
 def run_response_aggregator(model, modelName: str, user_info=None, listings=None, general=None, rag_context=None) -> str:
     """Aggregate all agent responses into a cohesive reply"""
-    # Enhanced prompt with RAG context
+    # Enhanced prompt with RAG context (but don't show chat history to user)
     context_section = ""
     if rag_context:
         context_section = "\n\n=== RELEVANT CONTEXT ===\n"
@@ -148,11 +148,12 @@ def run_response_aggregator(model, modelName: str, user_info=None, listings=None
             for user in rag_context["user_info"]:
                 context_section += f"- {user.get('name', 'N/A')} ({user.get('email', 'N/A')})\n"
         
-        if rag_context.get("chat_history"):
-            context_section += "\nRecent Conversation History:\n"
-            for chat in rag_context["chat_history"][:3]:  # Last 3 conversations
-                context_section += f"- User: {chat.get('message', 'N/A')[:100]}...\n"
-                context_section += f"  Bot: {chat.get('response', 'N/A')[:100]}...\n"
+        # Remove chat history from visible context - let RAG handle it invisibly
+        # if rag_context.get("chat_history"):
+        #     context_section += "\nRecent Conversation History:\n"
+        #     for chat in rag_context["chat_history"][:3]:  # Last 3 conversations
+        #         context_section += f"- User: {chat.get('message', 'N/A')[:100]}...\n"
+        #         context_section += f"  Bot: {chat.get('response', 'N/A')[:100]}...\n"
         
         if rag_context.get("listings"):
             context_section += "\nRelevant Properties:\n"
@@ -178,7 +179,7 @@ def run_response_aggregator(model, modelName: str, user_info=None, listings=None
     if general:
         prompt += f"General chat reply:\n{general}\n\n"
 
-    prompt += "Respond in a warm, conversational tone. You can address the user directly if their name is available. Use the context to provide personalized responses."
+    prompt += "Respond in a warm, conversational tone. You can address the user directly if their name is available. Use the context to provide personalized responses. Do NOT mention previous conversations or chat history in your response - just respond naturally to the current message."
 
     response = model.generate_content(model=modelName, contents=prompt)
     return response.text
@@ -203,6 +204,7 @@ def process_chat_message(message: str, user_id: str, session_id: str, model, mod
         replies = []
         user_response, listing_response, general_reply = None, None, None
         user_result = None
+        show_welcome_message = False
 
         if "user_info" in intents:
             print("🔍 Detected user_info intent, extracting user data...")
@@ -221,7 +223,11 @@ def process_chat_message(message: str, user_id: str, session_id: str, model, mod
                     print(f"✅ Found existing user with email {extracted_email}")
                     user_id = existing_user.get("user_id", extracted_email)
                     user_result = None  # Don't create duplicate
-                    replies.append(f"Welcome back! I found your existing profile.")
+                    
+                    # Only show welcome message if this is a new session or if user_id was "anonymous"
+                    if user_id == "anonymous" or not data_manager.chat_col.find_one({"user_id": user_id, "session_id": session_id}):
+                        show_welcome_message = True
+                        replies.append(f"Welcome back! I found your existing profile.")
                 else:
                     # Create new user
                     user_id = extracted_email
