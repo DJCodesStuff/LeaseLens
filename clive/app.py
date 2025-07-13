@@ -171,13 +171,12 @@ def chat_with_bot():
     try:
         intents = classify_intent(message)
         replies = []
+        user_response, listing_response, general_reply = "", "", ""
+
 
         if "user_info" in intents:
-            print("ENTERING USER AGENT")
             user_response = run_user_agent(message)
-            print(user_response)
             replies.append(user_response)
-            print("EXITING USER AGENT")
 
         if "listings_request" in intents:
             listing_response = run_listing_agent(message)
@@ -195,9 +194,9 @@ def chat_with_bot():
 
         aggregated = run_response_aggregator(
             model, modelName,
-            user_info = user_response,
-            listings = listing_response,
-            general = general_reply
+            user_info = user_response if user_response else "",
+            listings = listing_response if listing_response else "",
+            general = general_reply if general_reply else ""
         )
         return jsonify({
             "response": aggregated
