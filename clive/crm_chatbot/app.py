@@ -13,6 +13,12 @@ import uuid
 from vector_db_setup import VectorDatabaseManager
 from qdrant_client.models import Filter
 from agents import process_chat_message
+import time
+import io
+import json
+import pandas as pd
+from werkzeug.utils import secure_filename
+import pdfplumber
 
 load_dotenv()
 app = Flask(__name__)
@@ -103,50 +109,174 @@ def chat_with_bot():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# === LISTINGS route (CSV + Pydantic) ===
+# === DOCUMENT INGESTION route (CSV, PDF, TXT, JSON) ===
+@app.route('/upload_docs', methods=['POST'])
+def upload_documents():
+    files = request.files.getlist('file')
+    if not files:
+        return jsonify({'error': 'No files provided'}), 400
+
+    results = []
+    total_time = 0
+
+    def detect_file_type(filename):
+        ext = filename.lower().split('.')[-1]
+        if ext == 'csv':
+            return 'csv'
+        elif ext == 'pdf':
+            return 'pdf'
+        elif ext == 'txt':
+            return 'txt'
+        elif ext == 'json':
+            return 'json'
+        else:
+            return 'unknown'
+
+    cre_fields = [
+        'unique_id', 'property_address', 'floor', 'suite', 'size_sf',
+        'rent_per_sf_year', 'broker_email', 'annual_rent', 'monthly_rent', 'gci_on_3_years'
+    ]
+
+    def parse_txt_line(line):
+        # Expects comma-separated values in CRERecord order
+        parts = [p.strip() for p in line.split(',')]
+        if len(parts) != len(cre_fields):
+            return None
+        try:
+            record = CRERecord(
+                unique_id=int(parts[0]),
+                property_address=parts[1],
+                floor=parts[2],
+                suite=parts[3],
+                size_sf=int(parts[4]),
+                rent_per_sf_year=float(parts[5]),
+                broker_email=parts[6],
+                annual_rent=float(parts[7]),
+                monthly_rent=float(parts[8]),
+                gci_on_3_years=float(parts[9])
+            )
+            return record.model_dump()
+        except Exception:
+            return None
+
+    for file in files:
+        start_time = time.time()
+        filename = secure_filename(file.filename)
+        file_type = detect_file_type(filename)
+        result = {
+            'filename': filename,
+            'type': file_type,
+            'records_inserted': 0,
+            'rejected_records': 0,
+            'errors': [],
+            'processing_time': 0.0
+        }
+        try:
+            if file_type == 'csv':
+                df = pd.read_csv(file)
+                validated, rejected = [], []
+                for _, row in df.iterrows():
+                    try:
+                        record = CRERecord(
+                            unique_id=row["unique_id"],
+                            property_address=row["Property Address"],
+                            floor=row["Floor"],
+                            suite=row["Suite"],
+                            size_sf=row["Size (SF)"],
+                            rent_per_sf_year=row["Rent/SF/Year"],
+                            broker_email=row["BROKER Email ID"],
+                            annual_rent=row["Annual Rent"],
+                            monthly_rent=row["Monthly Rent"],
+                            gci_on_3_years=row["GCI On 3 Years"]
+                        )
+                        validated.append(record.model_dump())
+                    except ValidationError as ve:
+                        rejected.append(str(ve))
+                if validated:
+                    listings_col.insert_many(validated)
+                    if vdb_manager:
+                        for listing in validated:
+                            vdb_manager.add_document('Listings', listing, vdb_manager.create_listing_document)
+                result['records_inserted'] = len(validated)
+                result['rejected_records'] = len(rejected)
+                result['errors'] = rejected
+            elif file_type == 'json':
+                content = json.load(file)
+                if isinstance(content, list):
+                    validated, rejected = [], []
+                    for item in content:
+                        try:
+                            record = CRERecord(**item)
+                            validated.append(record.model_dump())
+                        except ValidationError as ve:
+                            rejected.append(str(ve))
+                    if validated:
+                        listings_col.insert_many(validated)
+                        if vdb_manager:
+                            for listing in validated:
+                                vdb_manager.add_document('Listings', listing, vdb_manager.create_listing_document)
+                    result['records_inserted'] = len(validated)
+                    result['rejected_records'] = len(rejected)
+                    result['errors'] = rejected
+                else:
+                    result['errors'] = ['JSON must be a list of objects matching the CRERecord schema.']
+            elif file_type == 'txt':
+                lines = file.read().decode('utf-8').splitlines()
+                validated, rejected = [], []
+                for line in lines:
+                    rec = parse_txt_line(line)
+                    if rec:
+                        validated.append(rec)
+                    else:
+                        rejected.append(f'Invalid line: {line}')
+                if validated:
+                    listings_col.insert_many(validated)
+                    if vdb_manager:
+                        for listing in validated:
+                            vdb_manager.add_document('Listings', listing, vdb_manager.create_listing_document)
+                result['records_inserted'] = len(validated)
+                result['rejected_records'] = len(rejected)
+                result['errors'] = rejected
+            elif file_type == 'pdf':
+                validated, rejected = [], []
+                with pdfplumber.open(file) as pdf:
+                    for page in pdf.pages:
+                        text = page.extract_text()
+                        if not text:
+                            continue
+                        for line in text.split('\n'):
+                            rec = parse_txt_line(line)
+                            if rec:
+                                validated.append(rec)
+                            else:
+                                rejected.append(f'Invalid line: {line}')
+                if validated:
+                    listings_col.insert_many(validated)
+                    if vdb_manager:
+                        for listing in validated:
+                            vdb_manager.add_document('Listings', listing, vdb_manager.create_listing_document)
+                result['records_inserted'] = len(validated)
+                result['rejected_records'] = len(rejected)
+                result['errors'] = rejected
+            else:
+                result['errors'] = [f'Unsupported file type: {file_type}']
+        except Exception as e:
+            result['errors'] = [str(e)]
+        result['processing_time'] = round(time.time() - start_time, 3)
+        total_time += result['processing_time']
+        results.append(result)
+
+    return jsonify({
+        'message': 'Documents processed successfully',
+        'processed_files': results,
+        'total_processing_time': total_time,
+        'vector_db_updated': bool(vdb_manager)
+    })
+
+# === Backward compatibility: /upload_listings redirects to /upload_docs ===
 @app.route('/upload_listings', methods=['POST'])
 def upload_listings():
-    file = request.files.get('file')
-    if not file or file.filename == '':
-        return jsonify({'error': 'No file provided'}), 400
-
-    try:
-        df = pd.read_csv(file)
-        validated, rejected = [], []
-
-        for _, row in df.iterrows():
-            try:
-                record = CRERecord(
-                    unique_id=row["unique_id"],
-                    property_address=row["Property Address"],
-                    floor=row["Floor"],
-                    suite=row["Suite"],
-                    size_sf=row["Size (SF)"],
-                    rent_per_sf_year=row["Rent/SF/Year"],
-                    broker_email=row["BROKER Email ID"],
-                    annual_rent=row["Annual Rent"],
-                    monthly_rent=row["Monthly Rent"],
-                    gci_on_3_years=row["GCI On 3 Years"]
-                )
-                validated.append(record.dict())
-            except ValidationError:
-                rejected.append(row["unique_id"])
-
-        if validated:
-            listings_col.insert_many(validated)
-            
-            # Add to vector database if available
-            if vdb_manager:
-                for listing in validated:
-                    vdb_manager.add_document('Listings', listing, vdb_manager.create_listing_document)
-
-        return jsonify({
-            'message': f'{len(validated)} records inserted',
-            'rejected_record_ids': rejected
-        }), 200
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return upload_documents()
 
 # === USERS route (JSON input) ===
 @app.route('/users', methods=['POST'])
