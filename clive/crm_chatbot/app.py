@@ -45,6 +45,7 @@ except Exception as e:
 
 @app.route('/chat', methods=['POST'])
 def chat_with_bot():
+    start_time = time.time()
     body = request.get_json()
     message = body.get("message")
     session_id = body.get("session_id")
@@ -67,7 +68,7 @@ def chat_with_bot():
         )
 
     if not message:
-        return jsonify({"error": "Message is required"}), 400
+        return jsonify({"status": "error", "error": "Message is required", "processing_time": round(time.time() - start_time, 4)}), 400
 
     try:
         # Process message through agents
@@ -85,6 +86,24 @@ def chat_with_bot():
         # Update user_id if it was changed during processing
         user_id = result["user_id"]
 
+        # === SESSION STATUS LOGIC ===
+        # Get current session
+        session_doc = session_col.find_one({"session_id": session_id})
+        current_status = session_doc.get("status", "Unresolved") if session_doc else "Unresolved"
+        # If not resolved, update status based on intent
+        if current_status != "Resolved":
+            intents = result.get("intents") or []
+            new_status = current_status
+            if "listings_request" in intents:
+                new_status = "Inquiring"
+            else:
+                new_status = current_status or "Unresolved"
+            session_col.update_one(
+                {"session_id": session_id},
+                {"$set": {"status": new_status}},
+                upsert=True
+            )
+
         # Store chat in MongoDB
         chat_entry = {
             "chat_id": str(uuid.uuid4()),
@@ -100,21 +119,28 @@ def chat_with_bot():
         if vdb_manager:
             vdb_manager.add_document('chat_history', chat_entry, vdb_manager.create_chat_document)
 
-        return jsonify({
+        response = {
+            "status": "success",
             "response": result["response"],
             "session_id": session_id,
-            "user_id": user_id
-        })
+            "user_id": user_id,
+            "processing_time": round(time.time() - start_time, 4)
+        }
+        # Optionally include RAG context info if present
+        if "rag_context" in result:
+            response["rag_context"] = result["rag_context"]
+        return jsonify(response)
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"status": "error", "error": str(e), "processing_time": round(time.time() - start_time, 4)}), 500
 
 # === DOCUMENT INGESTION route (CSV, PDF, TXT, JSON) ===
 @app.route('/upload_docs', methods=['POST'])
 def upload_documents():
+    start_time = time.time()
     files = request.files.getlist('file')
     if not files:
-        return jsonify({'error': 'No files provided'}), 400
+        return jsonify({'status': 'error', 'error': 'No files provided', 'processing_time': round(time.time() - start_time, 4)}), 400
 
     results = []
     total_time = 0
@@ -160,7 +186,7 @@ def upload_documents():
             return None
 
     for file in files:
-        start_time = time.time()
+        start_time_file = time.time()
         filename = secure_filename(file.filename)
         file_type = detect_file_type(filename)
         result = {
@@ -262,15 +288,17 @@ def upload_documents():
                 result['errors'] = [f'Unsupported file type: {file_type}']
         except Exception as e:
             result['errors'] = [str(e)]
-        result['processing_time'] = round(time.time() - start_time, 3)
+        result['processing_time'] = round(time.time() - start_time_file, 3)
         total_time += result['processing_time']
         results.append(result)
 
     return jsonify({
+        'status': 'success',
         'message': 'Documents processed successfully',
         'processed_files': results,
         'total_processing_time': total_time,
-        'vector_db_updated': bool(vdb_manager)
+        'vector_db_updated': bool(vdb_manager),
+        'processing_time': round(time.time() - start_time, 4)
     })
 
 # === Backward compatibility: /upload_listings redirects to /upload_docs ===
@@ -281,6 +309,7 @@ def upload_listings():
 # === USERS route (JSON input) ===
 @app.route('/users', methods=['POST'])
 def add_user():
+    start_time = time.time()
     try:
         data = request.get_json()
         result = data_manager.create_user(data)
@@ -290,25 +319,96 @@ def add_user():
             vdb_manager.add_document('Users', data, vdb_manager.create_user_document)
         
         status_code = 201 if result['status'] == 'success' else 400
-        return jsonify(result), status_code
+        return jsonify({**result, 'processing_time': round(time.time() - start_time, 4)}), status_code
     except ValidationError as e:
-        return jsonify({'error': e.errors()}), 400
+        return jsonify({'status': 'error', 'error': e.errors(), 'processing_time': round(time.time() - start_time, 4)}), 400
     except Exception as ex:
-        return jsonify({'error': str(ex)}), 500
+        return jsonify({'status': 'error', 'error': str(ex), 'processing_time': round(time.time() - start_time, 4)}), 500
+
+# === USER CRUD ENDPOINTS ===
+
+# Alias for user creation (already exists as /users)
+@app.route('/crm/create_user', methods=['POST'])
+def crm_create_user():
+    return add_user()
+
+# Update user info by user_id
+@app.route('/crm/update_user/<user_id>', methods=['PUT'])
+def crm_update_user(user_id):
+    start_time = time.time()
+    try:
+        updates = request.get_json()
+        if not updates:
+            return jsonify({'status': 'error', 'error': 'No update data provided', 'processing_time': round(time.time() - start_time, 4)}), 400
+        result = data_manager.update_user(user_id, updates)
+        return jsonify({**result, 'processing_time': round(time.time() - start_time, 4)}), 200 if result['status'] == 'success' else 400
+    except Exception as ex:
+        return jsonify({'status': 'error', 'error': str(ex), 'processing_time': round(time.time() - start_time, 4)}), 500
+
+# Delete user by user_id
+@app.route('/crm/delete_user/<user_id>', methods=['DELETE'])
+def crm_delete_user(user_id):
+    start_time = time.time()
+    try:
+        result = data_manager.delete_user(user_id)
+        return jsonify({**result, 'processing_time': round(time.time() - start_time, 4)}), 200 if result['status'] == 'success' else 400
+    except Exception as ex:
+        return jsonify({'status': 'error', 'error': str(ex), 'processing_time': round(time.time() - start_time, 4)}), 500
+
+# Get user info by user_id
+@app.route('/crm/get_user/<user_id>', methods=['GET'])
+def crm_get_user(user_id):
+    start_time = time.time()
+    try:
+        user = users_col.find_one({'user_id': user_id}, {'_id': 0})
+        if user:
+            return jsonify({'status': 'success', 'user': user, 'processing_time': round(time.time() - start_time, 4)}), 200
+        else:
+            return jsonify({'status': 'error', 'message': 'User not found', 'processing_time': round(time.time() - start_time, 4)}), 404
+    except Exception as ex:
+        return jsonify({'status': 'error', 'error': str(ex), 'processing_time': round(time.time() - start_time, 4)}), 500
+
+# === RESOLVE SESSION ENDPOINT ===
+@app.route('/crm/resolve_session/<session_id>', methods=['POST'])
+def resolve_session(session_id):
+    start_time = time.time()
+    try:
+        result = session_col.update_one(
+            {"session_id": session_id},
+            {"$set": {"status": "Resolved"}}
+        )
+        if result.matched_count:
+            return jsonify({
+                'status': 'success',
+                'message': f'Session {session_id} marked as Resolved.',
+                'processing_time': round(time.time() - start_time, 4)
+            }), 200
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': f'Session {session_id} not found.',
+                'processing_time': round(time.time() - start_time, 4)
+            }), 404
+    except Exception as ex:
+        return jsonify({'status': 'error', 'message': str(ex), 'processing_time': round(time.time() - start_time, 4)}), 500
 
 # === CHAT_HISTORY route (GET conversations for a user) ===
 @app.route('/crm/conversations/<user_id>', methods=['GET'])
 def get_user_conversations(user_id):
+    start_time = time.time()
     try:
         conversations = data_manager.get_chat_history(user_id)
-        
         sessions = {}
         for chat in conversations:
             session_id = chat.get('session_id')
             if session_id not in sessions:
+                # Fetch session status
+                session_doc = session_col.find_one({"session_id": session_id})
+                session_status = session_doc.get("status", "Unresolved") if session_doc else "Unresolved"
                 sessions[session_id] = {
                     'session_id': session_id,
                     'user_id': user_id,
+                    'status': session_status,
                     'conversations': []
                 }
             sessions[session_id]['conversations'].append({
@@ -317,32 +417,58 @@ def get_user_conversations(user_id):
                 'message': chat.get('message'),
                 'response': chat.get('response')
             })
-        
         sessions_list = list(sessions.values())
         sessions_list.sort(key=lambda x: x['conversations'][-1]['timestamp'] if x['conversations'] else '', reverse=True)
-        
         return jsonify({
+            'status': 'success',
             'user_id': user_id,
             'total_sessions': len(sessions_list),
-            'sessions': sessions_list
+            'sessions': sessions_list,
+            'processing_time': round(time.time() - start_time, 4)
         }), 200
-        
     except Exception as ex:
-        return jsonify({'error': str(ex)}), 500
+        return jsonify({'status': 'error', 'error': str(ex), 'processing_time': round(time.time() - start_time, 4)}), 500
+
+# === CONVERSATION RESET ENDPOINT ===
+@app.route('/reset', methods=['POST'])
+def reset_conversation():
+    start_time = time.time()
+    try:
+        data = request.get_json(silent=True) or {}
+        user_id = data.get('user_id')
+        if user_id:
+            result = chat_col.delete_many({'user_id': user_id})
+            return jsonify({
+                'status': 'success',
+                'message': f'All chat history for user {user_id} deleted.',
+                'deleted_count': result.deleted_count,
+                'processing_time': round(time.time() - start_time, 4)
+            }), 200
+        else:
+            result = chat_col.delete_many({})
+            return jsonify({
+                'status': 'success',
+                'message': 'All chat history deleted.',
+                'deleted_count': result.deleted_count,
+                'processing_time': round(time.time() - start_time, 4)
+            }), 200
+    except Exception as ex:
+        return jsonify({'status': 'error', 'message': str(ex), 'processing_time': round(time.time() - start_time, 4)}), 500
 
 # === VECTOR DB SYNC endpoint ===
 @app.route('/admin/sync-vector-db', methods=['POST'])
 def sync_vector_database():
+    start_time = time.time()
     """Admin endpoint to sync MongoDB data to Qdrant"""
     try:
         if not vdb_manager:
-            return jsonify({'error': 'Vector database not available'}), 500
+            return jsonify({'status': 'error', 'error': 'Vector database not available', 'processing_time': round(time.time() - start_time, 4)}), 500
         
         vdb_manager.sync_mongodb_to_qdrant()
-        return jsonify({'message': 'Vector database sync completed successfully'}), 200
+        return jsonify({'status': 'success', 'message': 'Vector database sync completed successfully', 'processing_time': round(time.time() - start_time, 4)}), 200
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'status': 'error', 'error': str(e), 'processing_time': round(time.time() - start_time, 4)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True) 
