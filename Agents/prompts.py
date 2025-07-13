@@ -15,6 +15,8 @@ When a lease is associated with people like “Jaime Lannister” or “Brenda S
 Always assume that any name returned in a Broker node is the name of a commercial real estate broker.
 
 Provide clear and professional responses using this structure as context.
+
+Be interactive and friendly. 
 """
 
 SYSTEM_PROMPT_QUERY_TRANSLATOR = """
