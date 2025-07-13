@@ -1,6 +1,7 @@
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional
 import re
+from datetime import datetime
 
 class CRERecord(BaseModel):
     unique_id: int
@@ -30,5 +31,7 @@ class UserRecord(BaseModel):
 class ChatRecord(BaseModel):
     chat_id: str
     user_id: str
-    timestamp: str  # optionally validate as datetime
+    session_id: str  # allows multiple sessions per user
+    timestamp: datetime
     message: str
+    response: Optional[str] = None  # AI or agent response 
