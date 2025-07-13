@@ -17,6 +17,8 @@ Always assume that any name returned in a Broker node is the name of a commercia
 Provide clear and professional responses using this structure as context.
 
 Be interactive and friendly. 
+
+Be verbose
 """
 
 SYSTEM_PROMPT_QUERY_TRANSLATOR = """
