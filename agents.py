@@ -8,6 +8,10 @@ import json
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from user_data import UserDataManager
+from Agents.genai_wrapper import GenAIWrapper
+
+wrapper = GenAIWrapper()
+wrapper.load_graph()
 
 # Enhanced chatbot personality with RAG context
 CHATBOT_CONTEXT = (
@@ -89,52 +93,56 @@ def run_user_agent(message: str, model, modelName: str, data_manager: UserDataMa
 
 def run_listing_agent(message: str, model, modelName: str, listings_col, rag_context: Optional[Dict] = None) -> Any:
     """Search for commercial property listings"""
-    # Enhanced prompt with RAG context
-    context_info = ""
-    if rag_context and rag_context.get("listings"):
-        context_info = f"\n\nRelevant property context:\n"
-        for listing in rag_context["listings"][:2]:  # Use top 2 relevant listings
-            context_info += f"- {listing.get('property_address', 'N/A')}: ${listing.get('monthly_rent', 'N/A')}/mo, {listing.get('size_sf', 'N/A')} sqft\n"
+    # # Enhanced prompt with RAG context
+    # context_info = ""
+    # if rag_context and rag_context.get("listings"):
+    #     context_info = f"\n\nRelevant property context:\n"
+    #     for listing in rag_context["listings"][:2]:  # Use top 2 relevant listings
+    #         context_info += f"- {listing.get('property_address', 'N/A')}: ${listing.get('monthly_rent', 'N/A')}/mo, {listing.get('size_sf', 'N/A')} sqft\n"
     
-    prompt = (
-        f"Generate a MongoDB filter using the following schema for commercial listings:\n"
-        f"- property_address (string)\n"
-        f"- floor (string)\n"
-        f"- suite (string)\n"
-        f"- size_sf (number)\n"
-        f"- rent_per_sf_year (number)\n"
-        f"- broker_email (string)\n"
-        f"- annual_rent (number)\n"
-        f"- monthly_rent (number)\n"
-        f"- gci_on_3_years (number)\n\n"
-        f"Use fuzzy matching with `$regex` for addresses. Use `$lte` or `$gte` for numeric filters.\n"
-        f"Return only a valid JSON object. Example:\n"
-        f"{{\n"
-        f"  \"property_address\": {{\"$regex\": \"Broadway\", \"$options\": \"i\"}},\n"
-        f"  \"monthly_rent\": {{\"$lte\": 20000}}\n"
-        f"}}\n\n"
-        f"{context_info}\n"
-        f"User message:\n{message}"
-    )
+    # prompt = (
+    #     f"Generate a MongoDB filter using the following schema for commercial listings:\n"
+    #     f"- property_address (string)\n"
+    #     f"- floor (string)\n"
+    #     f"- suite (string)\n"
+    #     f"- size_sf (number)\n"
+    #     f"- rent_per_sf_year (number)\n"
+    #     f"- broker_email (string)\n"
+    #     f"- annual_rent (number)\n"
+    #     f"- monthly_rent (number)\n"
+    #     f"- gci_on_3_years (number)\n\n"
+    #     f"Use fuzzy matching with `$regex` for addresses. Use `$lte` or `$gte` for numeric filters.\n"
+    #     f"Return only a valid JSON object. Example:\n"
+    #     f"{{\n"
+    #     f"  \"property_address\": {{\"$regex\": \"Broadway\", \"$options\": \"i\"}},\n"
+    #     f"  \"monthly_rent\": {{\"$lte\": 20000}}\n"
+    #     f"}}\n\n"
+    #     f"{context_info}\n"
+    #     f"User message:\n{message}"
+    # )
 
-    response = model.generate_content(model=modelName, contents=prompt)
-    raw_output = clean_gemini_json(response.text.strip())
+    # response = model.generate_content(model=modelName, contents=prompt)
+    # raw_output = clean_gemini_json(response.text.strip())
 
-    print("LISTING AGENT RAW OUTPUT:", raw_output)
+    # print("LISTING AGENT RAW OUTPUT:", raw_output)
 
-    try:
-        query = json.loads(raw_output)
-        print("LISTING QUERY:", query)
+    # try:
+    #     query = json.loads(raw_output)
+    #     print("LISTING QUERY:", query)
 
-        # Run MongoDB fuzzy search
-        listings = list(listings_col.find(query, {"_id": 0}).limit(5))
+    #     # Run MongoDB fuzzy search
+    #     listings = list(listings_col.find(query, {"_id": 0}).limit(5))
 
-        if listings:
-            return listings
-        return "Sorry, no matching properties found."
-    except Exception as e:
-        print("❌ Listing Query Parse Error:", e)
-        return f"Error while searching listings: {str(e)}"
+    #     if listings:
+    #         return listings
+    #     return "Sorry, no matching properties found."
+    # except Exception as e:
+    #     print("❌ Listing Query Parse Error:", e)
+    #     return f"Error while searching listings: {str(e)}"
+
+    response = wrapper.generate(message)
+    return response
+    
 
 def run_response_aggregator(model, modelName: str, user_info=None, listings=None, general=None, rag_context=None) -> str:
     """Aggregate all agent responses into a cohesive reply"""
