@@ -11,3 +11,9 @@ google-genai>=1.25.0
 uuid
 datetime
 pdfplumber
+
+networkx
+
+werkzeug
+google-generativeai
+agno
