@@ -16,10 +16,7 @@ Always assume that any name returned in a Broker node is the name of a commercia
 
 Provide clear and professional responses using this structure as context.
 
-Be interactive and friendly. 
-
-Be verbose
-"""
+""" # Not used
 
 SYSTEM_PROMPT_QUERY_TRANSLATOR = """
 You are a query translator that converts user questions about lease, broker, and property data into JSON-based graph queries.
