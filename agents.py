@@ -141,6 +141,7 @@ def run_listing_agent(message: str, model, modelName: str, listings_col, rag_con
     #     return f"Error while searching listings: {str(e)}"
 
     response = wrapper.generate(message)
+    print("LISTING AGENT RESPONSE:", response)
     return response
     
 

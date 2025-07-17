@@ -77,7 +77,7 @@ from pymongo import MongoClient
 from dotenv import load_dotenv
 from pathlib import Path
 
-env_path = Path(__file__).parent / ".env"
+env_path = Path(__file__).parent.parent / ".env"
 loaded = load_dotenv(env_path)
 
 # Load Mongo URI from environment variable
@@ -88,7 +88,7 @@ if not mongo_uri:
 # Connect to MongoDB
 client = MongoClient(mongo_uri)
 db = client["CRM"]
-collection = db["listings"]
+collection = db["Listings"]
 
 # Query all documents
 documents = list(collection.find({}))
