@@ -17,3 +17,5 @@ networkx
 werkzeug
 google-generativeai
 agno
+nltk
+fuzzywuzzy

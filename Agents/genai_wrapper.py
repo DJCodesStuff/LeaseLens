@@ -5,6 +5,11 @@ from dotenv import load_dotenv
 from pathlib import Path
 import networkx as nx
 import google.generativeai as genai
+import re
+
+import nltk
+nltk.download('stopwords')
+from nltk.corpus import stopwords
 
 from Agents.graph_query_agent import GraphQueryAgent
 from Agents.prompts import SYSTEM_PROMPT
@@ -35,9 +40,9 @@ class GenAIWrapper:
         self.system_prompt = system_prompt or SYSTEM_PROMPT
 
         genai.configure(api_key=self.api_key)
-        self.chat = genai.GenerativeModel(self.model_name).start_chat(
-            history=[{"role": "user", "parts": [self.system_prompt.strip()]}]
-        )
+        # self.chat = genai.GenerativeModel(self.model_name).start_chat(
+        #     history=[{"role": "user", "parts": [self.system_prompt.strip()]}]
+        # )
 
         self.graph       = None
         self.query_agent = None
@@ -62,40 +67,105 @@ class GenAIWrapper:
             print("Error loading graph:", e)
 
     # ─────────────────── TOP-LEVEL GENERATE ──────────────────
+    # def generate(self, user_prompt: str, **chat_kwargs):
+    #     if not isinstance(user_prompt, str) or not user_prompt.strip():
+    #         return "Prompt must be a non-empty string."
+    #     if self.query_agent is None:
+    #         return "Graph not loaded. Call load_graph() first."
+
+    #     # 1️⃣  Translate NL → structured queries
+    #     instructions = self.query_agent.generate_query_from_prompt(user_prompt)
+
+    #     # 2️⃣  Run each instruction on the graph
+    #     results = []
+    #     for inst in instructions:
+    #         qtype  = inst.get("query_type", "unsupported")
+    #         params = inst.get("params", {})
+    #         if qtype == "unsupported":
+    #             results.append("❌ I couldn’t understand this part of your request.")
+    #             continue
+    #         results.append(str(self.query_agent.execute(qtype, **params)))
+
+    #     # 3️⃣  Feed the clean results back to Gemini for a final answer
+    #     enriched = (
+    #         "You are a helpful assistant. Answer the user's question **only** "
+    #         "with the information in the query results below. "
+    #         "Do not ask for clarification or expose internal reasoning.\n\n"
+    #         f"User question: {user_prompt}\n\n"
+    #         "Query results:\n" + "\n".join(results)
+    #     )
+
+    #     print("🧠 Gemini query instruction:", instructions)
+    #     try:
+    #         reply = self.chat.send_message(enriched, **chat_kwargs)
+    #         return reply.text
+    #     except Exception as e:
+    #         return f"Error from Gemini: {e}"
+
+
     def generate(self, user_prompt: str, **chat_kwargs):
         if not isinstance(user_prompt, str) or not user_prompt.strip():
             return "Prompt must be a non-empty string."
         if self.query_agent is None:
             return "Graph not loaded. Call load_graph() first."
 
-        # 1️⃣  Translate NL → structured queries
+        # 1️⃣ Generate structured instructions
         instructions = self.query_agent.generate_query_from_prompt(user_prompt)
 
-        # 2️⃣  Run each instruction on the graph
+        # 2️⃣ If LLM failed to parse a query, fallback to keyword search
+        if not instructions or all(inst.get("query_type") == "unsupported" for inst in instructions):
+            keyword = self._extract_keyword(user_prompt)
+            if not keyword:
+                return "I couldn't extract a valid keyword from your prompt."
+            instructions = [{
+                "query_type": "search_all_by_keyword",
+                "params": {"keyword": keyword}
+            }]
+
+        # 3️⃣ Execute the queries
         results = []
         for inst in instructions:
-            qtype  = inst.get("query_type", "unsupported")
+            qtype = inst.get("query_type", "unsupported")
             params = inst.get("params", {})
             if qtype == "unsupported":
                 results.append("❌ I couldn’t understand this part of your request.")
                 continue
-            results.append(str(self.query_agent.execute(qtype, **params)))
+            try:
+                result = self.query_agent.execute(qtype, **params)
+                results.append(str(result))
+            except Exception as e:
+                results.append(f"❌ Error running query '{qtype}': {e}")
+            
+        # print(results)
 
-        # 3️⃣  Feed the clean results back to Gemini for a final answer
+        # 4️⃣ Format for Gemini and generate response
         enriched = (
             "You are a helpful assistant. Answer the user's question **only** "
             "with the information in the query results below. "
             "Do not ask for clarification or expose internal reasoning.\n\n"
             f"User question: {user_prompt}\n\n"
-            "Query results:\n" + "\n".join(results)
+            "JSON Query Results:\n" + "\n".join(results)
         )
 
         print("🧠 Gemini query instruction:", instructions)
         try:
-            reply = self.chat.send_message(enriched, **chat_kwargs)
+            model = genai.GenerativeModel(self.model_name)
+            reply = model.generate_content(enriched, **chat_kwargs)
             return reply.text
         except Exception as e:
             return f"Error from Gemini: {e}"
+
+    # ─────────────── Keyword Extractor (helper) ───────────────
+    def _extract_keyword(self, prompt: str) -> str:
+        """
+        Extracts first meaningful keyword from the user prompt using NLTK stopwords.
+        """
+        stop_words = set(stopwords.words("english"))
+        tokens = re.findall(r"\b\w+\b", prompt.lower())
+        keywords = [t for t in tokens if t not in stop_words]
+        return keywords if keywords else ""
+
+
 
     # ────────────── OPTIONAL DEBUGGING UTILITIES ─────────────
     def debug_leases(self, max_items: int = 50):

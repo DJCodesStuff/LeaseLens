@@ -2,6 +2,7 @@
 import os, re, json, statistics, networkx as nx
 from dotenv import load_dotenv
 import google.generativeai as genai
+from fuzzywuzzy import fuzz
 from Agents.prompts import SYSTEM_PROMPT_QUERY_TRANSLATOR
 
 
@@ -97,6 +98,7 @@ class GraphQueryAgent:
             "list_all_leases":                 lambda **_: [n for n,d in self.graph.nodes(data=True) if d["type"]=="Lease"],
             "list_all_properties":             lambda **_: [n for n,d in self.graph.nodes(data=True) if d["type"]=="Property"],
             "list_all_query_types":            lambda **_: list(self.handlers.keys()),
+            "search_all_by_keyword":           self._search_all_by_keyword,
             "graph_summary_stats":             self._graph_summary_stats,
         }
 
@@ -239,6 +241,58 @@ class GraphQueryAgent:
             name = self.graph.nodes[best[0]].get("name", best[0])
             return { "broker": name, mode: best[1][mode] }
         return inner
+    
+    def _search_all_by_keyword(self, keyword, threshold: int = 80):
+        if not keyword:
+            return {"error": "Missing keyword for search."}
+
+        # Normalize keyword(s)
+        if isinstance(keyword, str):
+            keywords = [keyword.lower().strip()]
+        elif isinstance(keyword, list):
+            keywords = [k.lower().strip() for k in keyword if isinstance(k, str)]
+        else:
+            return {"error": "Keyword must be a string or list of strings."}
+
+        keywords = [re.sub(r"[^\w\s]", "", k) for k in keywords]
+
+        matches = []
+
+        for node, data in self.graph.nodes(data=True):
+            for attr_value in data.values():
+                if not isinstance(attr_value, str):
+                    continue
+
+                val_clean = re.sub(r"[^\w\s]", "", attr_value.lower())
+
+                for kw in keywords:
+                    score = fuzz.partial_ratio(kw, val_clean)
+                    if score >= threshold:
+                        matched_fields = {
+                            k: v for k, v in data.items()
+                            if isinstance(v, str) and any(
+                                fuzz.partial_ratio(k2, v.lower()) >= threshold
+                                for k2 in keywords
+                            )
+                        }
+
+                        matches.append({
+                            "id": node,
+                            "type": data.get("type", "unknown"),
+                            "matched_fields": matched_fields
+                        })
+                        break
+                else:
+                    continue
+                break
+
+        return (
+            matches
+            if matches
+            else {"message": "No matching nodes found for the given keyword(s)."}
+        )
+
+
 
     # ───────────────────────── SPECIFIC HANDLERS ────────────────────────────────
     def _brokers_for_lease(self, lease_id=None, **_):
