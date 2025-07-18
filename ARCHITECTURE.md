@@ -84,6 +84,9 @@ The CRM Chatbot is a sophisticated commercial real estate assistant that combine
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+<img width="971" height="971" alt="Untitled Diagram drawio (2)" src="https://github.com/user-attachments/assets/e27f9ef8-a4be-469b-9143-cbeec0f02893" />
+
+
 ## Component Details
 
 ### 1. API Layer (`app.py`)
