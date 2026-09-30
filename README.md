@@ -1,256 +1,104 @@
-# CRM Chatbot with RAG (Retrieval-Augmented Generation)
+# LeaseLens
 
-A commercial real estate chatbot system built with Flask, MongoDB, Google Gemini AI, and Qdrant vector database for intelligent conversation and property search.
+A multi-agent conversational assistant for commercial real estate leasing, combining an LLM, a lease knowledge graph and vector search behind a Flask API.
 
-## 🚀 Features
+## Overview
 
-- **Multi-Agentic Conversational AI**: Modular agents for intent classification, user info extraction, property search, and advanced graph queries
-- **RAG System**: Retrieval-Augmented Generation with Qdrant vector database (CSV, PDF, TXT, JSON ingestion)
-- **User Management**: Automatic user creation, profile management, and CRUD operations
-- **Session Tagging**: Each conversation session is tagged as `Inquiring`, `Unresolved`, or `Resolved` for easy tracking
-- **Property Search**: Advanced listing search with fuzzy matching and semantic retrieval
-- **Conversation Memory**: Persistent chat history across sessions, accessible via API
-- **Intent Classification**: Smart message classification for different actions
-- **Vector Search**: Semantic search across users, chat history, and listings
-- **Advanced Graph Agent**: (See `DHRUV/Agents/graph_query_agent.py`) for complex analytics
+Brokers and clients ask questions about office leases in plain language ("Who handled the lease with the highest rent?", "What properties are on Broadway?"). LeaseLens classifies each message, routes it to specialised agents (user-profile extraction, lease/property lookup, general conversation) and merges their outputs into one answer. Lease data is modelled as a NetworkX knowledge graph of leases, properties and brokers, which Google Gemini queries through a structured query translator; users, chat history and sessions live in MongoDB and are mirrored into Qdrant for semantic retrieval.
 
-## 📋 Prerequisites
+## Key features
 
-- Python 3.8+
-- Docker (for Qdrant)
-- MongoDB (local or cloud)
-- Google Gemini API key
+- **Intent-routed multi-agent pipeline** (`agents.py`): intent classifier, user-info agent, listing/graph agent and a response aggregator.
+- **Lease knowledge graph** (`init/create_graph.py`, `Agents/graph_query_agent.py`): Lease, Property and Broker nodes with `LOCATED_AT` / `HANDLED_BY` edges; Gemini translates questions into one of a fixed set of graph queries (averages, top-N, rent ranges, GCI thresholds, broker lookups, keyword search).
+- **Fuzzy matching fallback** for keyword search over graph nodes (`fuzzywuzzy`).
+- **RAG over CRM data** (`vector_db_setup.py`): users, chat history, listings and sessions embedded with `all-MiniLM-L6-v2` (384-dim) into Qdrant.
+- **CRM endpoints**: create, read, update and delete users; per-user conversation history grouped by session.
+- **Session tagging**: each session is tagged `Unresolved`, `Inquiring` or `Resolved`.
+- **Document ingestion**: upload listings as CSV, JSON, TXT or PDF (`/upload_docs`).
 
-## 🛠️ Installation
+## Tech stack
 
-### 1. Clone and Setup
+Python, Flask, Google Gemini (`google-genai`, `google-generativeai`), NetworkX, MongoDB (`pymongo`), Qdrant, sentence-transformers, Pydantic, pandas, pdfplumber, NLTK, fuzzywuzzy.
+
+## How it works
+
+```mermaid
+flowchart LR
+    C[Client] -->|POST /chat| A[Flask app.py]
+    A --> I[Intent classifier]
+    I -->|user_info| U[User agent -> MongoDB]
+    I -->|listings_request| G[Graph query agent]
+    G -->|NL -> JSON query| K[(Lease graph .graphml)]
+    I -->|general| R[Response aggregator]
+    U --> R
+    G --> R
+    Q[(Qdrant RAG context)] --> R
+    R --> A
+```
+
+More detail: [ARCHITECTURE.md](ARCHITECTURE.md) (components and data flow) and [API_CONTRACT.md](API_CONTRACT.md) (every endpoint with request/response examples).
+
+## Repository structure
+
+```
+app.py                     Flask API (chat, ingestion, CRM, admin routes)
+agents.py                  Intent classification and agent orchestration
+Agents/
+  genai_wrapper.py         Gemini facade over the graph query agent
+  graph_query_agent.py     NL -> structured query -> NetworkX execution
+  prompts.py               System prompts
+init/create_graph.py       Builds the lease graph from CSVs in ./data
+data/                      Sample knowledge base CSV and generated graph files
+models.py                  Pydantic models (UserRecord, ChatRecord, CRERecord)
+user_data.py               MongoDB user and chat management
+vector_db_setup.py         Qdrant collections and MongoDB -> Qdrant sync
+setup.py                   Optional helper that checks prerequisites
+test_chat_endpoint.py      Sends a sample request to a running server
+test_script_graphs.py      Queries the graph agent directly
+```
+
+## Getting started
+
+Prerequisites: Python 3.10+, Docker (for Qdrant), a MongoDB instance and a Gemini API key.
 
 ```bash
-git clone <repository-url>
-cd crm_chatbot
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+git clone https://github.com/DJCodesStuff/LeaseLens.git
+cd LeaseLens
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+
+cp env.example .env        # then fill in MONGO_URI and GEMINI_API_KEY
+echo "MODEL_NAME=gemini-2.5-flash" >> .env   # required by the graph agent
+
+docker run -p 6333:6333 qdrant/qdrant       # vector database
+python init/create_graph.py                 # rebuild data/lease_graph.* (optional, prebuilt files are included)
+python vector_db_setup.py                   # create Qdrant collections and sync
+python app.py                               # serves on http://localhost:5000
 ```
 
-### 2. Environment Configuration
-
-Create a `.env` file in the root directory:
-
-```env
-# MongoDB Configuration
-MONGO_URI=mongodb://localhost:27017/CRM
-
-# Google Gemini API
-GEMINI_API_KEY=your_gemini_api_key_here
-
-# Qdrant Configuration (optional, defaults to localhost:6333)
-QDRANT_URL=http://localhost:6333
-```
-
-### 3. Start Qdrant (Vector Database)
+Try it:
 
 ```bash
-# Start Qdrant using Docker
-docker run -p 6333:6333 qdrant/qdrant
+curl -X POST http://localhost:5000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What are the properties on Broadway?", "user_id": "user1@example.com"}'
 ```
 
-### 4. Setup Vector Database
+or run `python test_chat_endpoint.py` against the running server.
 
-```bash
-python vector_db_setup.py
-```
+## API at a glance
 
-### 5. Run the Application
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/chat` | Send a message, get an agent response |
+| POST | `/upload_docs` (alias `/upload_listings`) | Ingest listings from CSV/JSON/TXT/PDF |
+| POST | `/users` (alias `/crm/create_user`) | Create a user |
+| GET / PUT / DELETE | `/crm/get_user/<id>`, `/crm/update_user/<id>`, `/crm/delete_user/<id>` | Manage a user |
+| GET | `/crm/conversations/<user_id>` | Conversation history grouped by session |
+| POST | `/crm/resolve_session/<session_id>` | Mark a session `Resolved` |
+| POST | `/reset` | Clear chat history (all or one user) |
+| POST | `/admin/sync-vector-db` | Re-sync MongoDB into Qdrant |
 
-```bash
-python app.py
-```
+## Author
 
-The application will be available at `http://localhost:5000`
-
-## 📁 Project Structure
-
-```
-crm_chatbot/
-├── app.py                 # Main Flask application
-├── models.py              # Pydantic models for data validation
-├── user_data.py           # User data management utilities
-├── vector_db_setup.py     # Qdrant vector database setup
-├── requirements.txt       # Python dependencies
-├── .env                   # Environment variables
-├── API_CONTRACT.md        # Full API contract and sample requests
-├── ARCHITECTURE.md        # System and data flow diagrams
-└── README.md              # This file
-```
-
-## 🔧 API Endpoints
-
-All endpoints return JSON with `status` and `processing_time` fields. See `API_CONTRACT.md` for full details.
-
-### Chat & RAG
-
-**POST `/chat`**
-- Send a message to the chatbot and receive a response (RAG-enabled).
-- Request: `{ "message": "Show me offices in downtown.", "user_id": "user1@example.com", "session_id": "session_2024-07-13T12:00:00Z" }`
-- Response: `{ "status": "success", "response": "...", "session_id": "...", "user_id": "...", "processing_time": 0.12 }`
-
-### Document Ingestion
-
-**POST `/upload_docs`**
-- Upload property listings in CSV, JSON, TXT, or PDF format.
-- Form Data: `file` (one or more files)
-- Response: See `API_CONTRACT.md` for details.
-
-**POST `/upload_listings`**
-- Alias for `/upload_docs` (for backward compatibility)
-
-### User Management (CRM)
-
-**POST `/users`**
-- Create a new user.
-
-**POST `/crm/create_user`**
-- Alias for user creation.
-
-**GET `/crm/get_user/<user_id>`**
-- Get user info by user_id.
-
-**PUT `/crm/update_user/<user_id>`**
-- Update user info.
-
-**DELETE `/crm/delete_user/<user_id>`**
-- Delete a user.
-
-### Conversation & Session Management
-
-**GET `/crm/conversations/<user_id>`**
-- Get all conversation sessions for a user, grouped by session. Each session has a `status` (see below).
-
-**POST `/crm/resolve_session/<session_id>`**
-- Mark a session as resolved.
-
-**POST `/reset`**
-- Delete all chat history (global or for a specific user).
-
-### Admin
-
-**POST `/admin/sync-vector-db`**
-- Manually sync MongoDB data to Qdrant (vector DB).
-
----
-
-## 🗂️ Data Models
-
-**UserRecord**
-```json
-{
-  "user_id": "user1@example.com",
-  "name": "User One",
-  "email": "user1@example.com",
-  "role": "user"
-}
-```
-
-**ChatRecord**
-```json
-{
-  "chat_id": "...",
-  "user_id": "user1@example.com",
-  "session_id": "session_2024-07-13T12:00:00Z",
-  "timestamp": "2024-07-13T12:00:00Z",
-  "message": "...",
-  "response": "..."
-}
-```
-
-**CRERecord (Listing)**
-```json
-{
-  "unique_id": 1,
-  "property_address": "123 Main St",
-  "floor": "5",
-  "suite": "501",
-  "size_sf": 2000,
-  "rent_per_sf_year": 50.0,
-  "broker_email": "broker1@example.com",
-  "annual_rent": 100000,
-  "monthly_rent": 8333.33,
-  "gci_on_3_years": 25000
-}
-```
-
-## 🏷️ Session Tagging & Categorization
-
-- Each conversation session is tagged with a `status`:
-  - `Inquiring`: User is actively searching or asking about properties
-  - `Unresolved`: Session started but not yet resolved
-  - `Resolved`: Session marked as completed (via `/crm/resolve_session/<session_id>`)
-- Status is updated automatically based on detected intent or via API.
-
-## 🧪 Sample Conversation Log
-
-```json
-[
-  {
-    "chat_id": "1",
-    "user_id": "sarah@test.com",
-    "session_id": "session_2024-07-13T12:00:00Z",
-    "timestamp": "2024-07-13T12:00:00Z",
-    "message": "Hi, I am Sarah Johnson, my email is sarah@test.com. I am looking for office space in downtown.",
-    "response": "Thanks! I've saved your info to our CRM."
-  },
-  {
-    "chat_id": "2",
-    "user_id": "sarah@test.com",
-    "session_id": "session_2024-07-13T12:00:00Z",
-    "timestamp": "2024-07-13T12:01:00Z",
-    "message": "Show me properties under $5000/month",
-    "response": "Here are some matches: 123 Main St - $4500/mo, 456 Broadway - $4800/mo"
-  }
-]
-```
-
-## 🏗️ Architecture & Multi-Agent System
-
-- See `ARCHITECTURE.md` for a full system diagram and component breakdown.
-- Multi-agentic logic is implemented in `agents.py` and `DHRUV/Agents/`.
-- Advanced analytics and graph queries are supported via `DHRUV/Agents/graph_query_agent.py`.
-
-## 📄 API Contract
-
-- See `API_CONTRACT.md` for full endpoint details, request/response schemas, and sample calls.
-
-## 📅 Calendar Integration (Optional)
-
-- To integrate calendar events, you could:
-  - Add endpoints for event creation, update, and retrieval (e.g., `/crm/calendar_events`)
-  - Store event data in MongoDB, linked to user/session
-  - Use intent classification to detect scheduling requests
-  - (Optionally) Integrate with Google Calendar API for real-time sync
-
-## 🔒 Security Notes
-
-- Store API keys securely in environment variables
-- Use HTTPS in production
-- Implement proper authentication for admin endpoints
-- Regular backups of MongoDB and Qdrant data
-
-## 📈 Performance Optimization
-
-- Qdrant collections are optimized for cosine similarity search
-- Embeddings use all-MiniLM-L6-v2 model (384 dimensions)
-- Chat history is limited to recent conversations in RAG context
-- Vector database sync happens automatically for new data
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details. 
+**Dhruv Joshi** - [GitHub](https://github.com/DJCodesStuff) - [Portfolio](https://djcodesstuff.github.io/)
