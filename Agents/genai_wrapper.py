@@ -33,7 +33,6 @@ class GenAIWrapper:
 
         self.api_key    = os.getenv("GEMINI_API_KEY")
         self.model_name = os.getenv("MODEL_NAME")
-        print(self.api_key)
         if not self.api_key:
             raise ValueError("GOOGLE_API_KEY missing in environment")
 
